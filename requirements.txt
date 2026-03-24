@@ -1,0 +1,9 @@
+scipy
+nibabel
+nilearn
+tvb-data
+requests
+urllib3 
+charset_normalizer 
+certifi
+matplotlib
