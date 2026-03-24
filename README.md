@@ -246,5 +246,4 @@ GSOC_27/
 
 ---
 
-*OpenNeuro ds000228 · AAL atlas · rsHRF (Wu et al., Neuroimage 2021) · The Virtual Brain (EBRAINS) · Hagmann 66-region connectome*#   r s H R F - e s t i m a t i o n - a n d - t v b - m o d e l i n g  
- 
+*OpenNeuro ds000228 · AAL atlas · rsHRF (Wu et al., Neuroimage 2021) · The Virtual Brain (EBRAINS) · Hagmann 66-region connectome*
