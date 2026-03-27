@@ -241,8 +241,8 @@ GSOC_27/
 | HRF estimation — sub-pixar001 | ✅ Done |
 | Baseline TVB simulation | ✅ Done |
 | Regional HRF extraction |  ✅ Done |
-| Custom TVB BOLD monitor | 🔄 In progress |
-| FC comparison | ⏳ Pending |
+| Custom TVB BOLD monitor | ✅ Done |
+| FC comparison | ✅ Done |
 
 ---
 
