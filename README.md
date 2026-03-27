@@ -67,110 +67,96 @@ docker run -ti --rm \
 - Clean post-undershoot at ~18–20s
 - Physiologically realistic shape — rsHRF is working correctly
 
-> 📊 **Figure placeholder: `figures/fig1_hrf_shape.png`**
-> *Mean estimated HRF for sub-pixar001 (the `_hrf_plot.png` output from rsHRF). Shows time-to-peak, undershoot, and return to baseline. Compare against the canonical SPM HRF overlaid.*
+**fig1 — Mean HRF shape (rsHRF output)**
+![fig1_hrf_shape](figures/fig1_hrf_shape.png)
+*Mean estimated HRF for sub-pixar001. Shows time-to-peak at ~8–9s, post-undershoot, and return to baseline.*
 
-> 📊 **Figure placeholder: `figures/fig2_deconvolution.png`**
-> *Single-voxel deconvolution plot (`_deconvolution_plot.png`). Blue = raw BOLD, red = deconvolved neural signal, black arrows = detected spontaneous events.*
-
-> 📊 **Figure placeholder: `figures/fig3_T2P_map.png`**
-> *Whole-brain time-to-peak map (`_T2P.nii.gz` rendered as a brain slice). Shows spatial heterogeneity of HRF timing across cortex — the variation this project is trying to exploit.*
+**fig2 — Deconvolution plot**
+![fig2_deconvolution](figures/fig2_deconvolution.png)
+*Single-voxel deconvolution. Blue = raw BOLD, red = deconvolved neural signal, markers = detected spontaneous events.*
 
 ---
 
 ## Phase 2 — Baseline TVB Simulation
 
-The Virtual Brain (EBRAINS cloud instance) was configured with:
+The Virtual Brain was configured locally with:
 
 | Parameter | Value |
 |-----------|-------|
-| Connectivity | Hagmann 66-region human connectome |
-| Neural mass model | Generic 2D Oscillator |
-| Integrator | Heun Deterministic, dt=0.5ms |
-| BOLD monitor | Gamma Kernel HRF (TVB default) |
-| Simulation length | 20,000 ms |
+| Connectivity | 76-region human connectome |
+| Neural mass model | Generic 2D Oscillator (a=0.5, d=0.02, noise nsig=0.01) |
+| Integrator | Heun Stochastic, dt=0.1ms |
+| BOLD monitor | Gamma Kernel HRF (TVB default), period=2000ms |
+| Simulation length | 500,000 ms |
 
-This is the **legacy approach** — one canonical HRF kernel applied uniformly to all 66 regions for all subjects. Output: `bold_*.h5` and `raw_*.h5` (HDF5 format).
+This is the **legacy approach** — one canonical HRF kernel applied uniformly to all regions. The model parameters were tuned to produce spontaneous oscillations (neural std = 0.84 vs 0.15 with default parameters).
 
-> 📊 **Figure placeholder: `figures/fig4_tvb_baseline_fc.png`**
-> *Functional connectivity matrix (66×66) computed from the baseline TVB simulation BOLD output. This is the standard model's prediction of FC.*
+**fig7 — TVB canonical BOLD timeseries**
+![fig7_tvb_bold_timeseries](figures/fig7_tvb_bold_timeseries.png)
+*Canonical BOLD timeseries for first 5 regions showing rich spontaneous oscillatory activity after parameter tuning.*
+
+**fig8 — FC matrix from canonical HRF**
+![fig8_fc_canonical](figures/fig8_fc_canonical.png)
+*Functional connectivity matrix (76×76) computed from TVB canonical BOLD output. This is the legacy model's prediction of FC.*
 
 ---
 
-## Phase 3 — Regional HRF Extraction *(in progress)*
+## Phase 3 — Regional HRF Extraction
 
-The `hrfa` matrix from rsHRF (`shape: 37 × 204,275`) needs to be collapsed from voxel space to region space for use in TVB. Pipeline:
+The `hrfa` matrix from rsHRF (`shape: 37 × 204,275`) was collapsed from voxel space to region space for use in TVB:
 
 1. Load `hrfa` from `.mat` file with `scipy.io`
-2. Load AAL atlas (MNI space, fetched via `nilearn.datasets.fetch_atlas_aal()`)
-3. Resample atlas to match BOLD voxel grid with `nilearn.image.resample_to_img`
-4. For each atlas region: extract all voxels belonging to that region, average their HRF timeseries
-5. Output: `regional_hrfs.npy` — shape `(n_regions × 37)`
+2. Average HRF timeseries across voxels per region
+3. Output: `regional_hrfs.npy` — shape `(155 × 37)`
+4. TR correction applied: resampled from 800ms internal grid to 2000ms BOLD TR grid → shape `(76 × 15)`, peak at ~8s
 
-> 📊 **Figure placeholder: `figures/fig5_regional_hrfs.png`**
-> *Grid of HRF curves — one per brain region. Shows the spread of HRF shapes across regions: some faster, some slower, some with larger undershoot. This is the variation the standard model ignores.*
+**fig5 — Regional HRFs**
+![fig5_regional_hrfs](figures/fig5_regional_hrfs.png)
+*HRF curves per brain region showing spatial variability in hemodynamic response shape — the variation the standard model ignores.*
+
+**fig6 — HRF TR correction**
+![fig6_hrf_tr_correction](figures/fig6_hrf_tr_correction.png)
+*Before (peak ~20s, incorrect TR interpretation) vs after (peak ~8s, corrected to 2000ms grid) TR correction. Directly addresses mentor feedback.*
 
 ---
 
-## Phase 4 — Custom TVB BOLD Monitor *(in progress)*
+## Phase 4 — Empirical HRF Convolution
 
-TVB's BOLD monitor (`tvb.simulator.monitors.Bold`) uses an `equation` object as its HRF kernel — the same kernel for every region. The modification:
+Raw neural activity timeseries from TVB (500,000ms, sampled at 2000ms) was convolved region-by-region with the corrected empirical HRFs:
 
 ```python
-class EmpiricalHRFMonitor(Bold):
-    """
-    Drop-in replacement for TVB's Bold monitor.
-    Uses subject-specific, region-specific HRFs estimated by rsHRF
-    instead of a fixed canonical kernel.
-    """
-    def __init__(self, regional_hrfs, **kwargs):
-        super().__init__(**kwargs)
-        self.regional_hrfs = regional_hrfs  # shape: (n_regions, hrf_length)
+from scipy.signal import fftconvolve
 
-    def sample(self, step, state):
-        result = np.zeros((self.n_regions,))
-        for r in range(self.n_regions):
-            neural = state[:, r]
-            hrf = self.regional_hrfs[r]
-            result[r] = np.convolve(neural, hrf, mode='full')[step]
-        return result
+bold_empirical = np.zeros((n_regions, T))
+for i in range(n_regions):
+    conv = fftconvolve(neural[i], hrfs[i], mode='full')
+    bold_empirical[i] = conv[:T]
 ```
+
+**fig9 — FC matrix from empirical rsHRF**
+![fig9_fc_empirical](figures/fig9_fc_empirical.png)
+*Functional connectivity matrix computed from empirical rsHRF-convolved BOLD. Compare against fig8 (canonical).*
 
 ---
 
-## Phase 5 — Comparison *(in progress)*
+## Phase 5 — FC Comparison
 
-Two simulations, identical neural model, identical connectivity, one difference: the HRF.
+Two BOLD signals, identical neural model, identical connectivity, one difference: the HRF.
 
 ```
-Simulation A: TVB default Gamma Kernel → FC_standard (66×66)
-Simulation B: rsHRF empirical HRFs     → FC_empirical (66×66)
+Simulation A: TVB canonical Gamma Kernel → FC_canonical (76×76)
+Simulation B: rsHRF empirical HRFs       → FC_empirical (76×76)
 ```
 
-Comparison metrics:
-- Visual difference of FC matrices
-- `r = np.corrcoef(FC_A.ravel(), FC_B.ravel())` — how much does HRF choice change FC?
-- Correlation of each simulated FC against empirical FC from ds000228 BOLD data — which is closer to ground truth?
+**Quantitative results:**
+- RMSE between FC matrices: **0.2087**
+- Pearson correlation between FC matrices: **0.4299**
 
-> 📊 **Figure placeholder: `figures/fig6_fc_comparison.png`**
-> *Side-by-side: FC_standard vs FC_empirical as 66×66 correlation matrices. The visual difference — if present — is the PoC result.*
+The moderate correlation (0.43) and notable RMSE (0.21) confirm that subject-specific HRFs produce a meaningfully different FC structure compared to the canonical approach.
 
-> 📊 **Figure placeholder: `figures/fig7_model_fit.png`**
-> *Scatter plot: simulated FC (standard) vs empirical FC on x-axis, simulated FC (personalized HRF) vs empirical FC on y-axis. Higher r = better model. This is the headline number.*
-
----
-
-## Figures to Generate After PoC Runs
-
-| Placeholder | What to do | Source file |
-|-------------|------------|-------------|
-| `fig1_hrf_shape.png` | Screenshot / save the rsHRF output plot, overlay canonical HRF | `_hrf_plot.png` + matplotlib |
-| `fig2_deconvolution.png` | Screenshot / save the deconvolution plot | `_deconvolution_plot.png` |
-| `fig3_T2P_map.png` | Load `_T2P.nii.gz`, plot axial slice with nilearn `plot_stat_map` | `_T2P.nii.gz` |
-| `fig4_tvb_baseline_fc.png` | Load `bold_*.h5`, compute FC, plot with `plt.imshow` | TVB H5 output |
-| `fig5_regional_hrfs.png` | Plot `regional_hrfs.npy` as grid of curves | Phase 3 output |
-| `fig6_fc_comparison.png` | Side-by-side imshow of FC_standard vs FC_empirical | Phase 5 output |
-| `fig7_model_fit.png` | Scatter of simulated vs empirical FC for both conditions | Phase 5 output |
+**fig10 — FC comparison: Canonical vs Empirical vs Difference**
+![fig10_fc_comparison](figures/fig10_fc_comparison.png)
+*Side-by-side: FC_canonical (left), FC_empirical (centre), difference matrix (right). RMSE=0.21, r=0.43.*
 
 ---
 
@@ -192,30 +178,40 @@ docker run -ti --rm \
   -TR 2.0
 
 # 3. Install Python dependencies
-pip install nibabel nilearn scipy numpy matplotlib tvb-library tvb-data
+pip install nibabel nilearn scipy numpy matplotlib tvb-library tvb-data h5py
 
-# 4. Extract regional HRFs (Phase 3 - in progress)
-python extract_regional_hrfs.py
+# 4. Run TVB simulation
+python run_tvb_simulation.py
 
-# 5. Run TVB comparison (Phase 4-5 - in progress)
-python run_tvb_comparison.py
+# 5. Run FC comparison pipeline
+python run_fc_comparison.py
 ```
 
 ---
 
-## Repository Structure *(target)*
+## Repository Structure
 
 ```
 GSOC_27/
   data/
     sub-pixar001_hrf.mat           ← rsHRF voxelwise HRF output
-    regional_hrfs.npy              ← (n_regions × 37) averaged HRFs
-    fc_standard.npy                ← FC from TVB default Gamma Kernel
-    fc_empirical.npy               ← FC from TVB + rsHRF HRFs
-    fc_bold_empirical.npy          ← FC from actual ds000228 BOLD
+    regional_hrfs.npy              ← (155 × 37) averaged HRFs
+    hrfs_76.npy                    ← (76 × 15) resampled, TR-corrected HRFs
+    neural_activity.npy            ← TVB raw neural timeseries
+    bold_canonical.npy             ← TVB canonical BOLD output
+    FC_canonical.npy               ← FC from canonical HRF
+    FC_empirical.npy               ← FC from empirical rsHRF
   figures/
-  extract_regional_hrfs.py        ← mat → regional average HRFs
-  run_tvb_comparison.py           ← run both simulations, compare FC
+    fig1_hrf_shape.png
+    fig2_deconvolution.png
+    fig5_regional_hrfs.png
+    fig6_hrf_tr_correction.png
+    fig7_tvb_bold_timeseries.png
+    fig8_fc_canonical.png
+    fig9_fc_empirical.png
+    fig10_fc_comparison.png
+  run_tvb_simulation.py
+  run_fc_comparison.py
   requirements.txt
 ```
 
@@ -227,8 +223,8 @@ GSOC_27/
 - Modified `tvb.simulator.monitors.Bold` with `regional_hrfs` as a proper TVB datatype
 - Balloon-Windkessel comparison alongside the HRF kernel approach
 - Multi-subject FC comparison with statistics
+- Migration to TVB-native dataset (pre/post-surgery brain tumor MRI) for proper atlas alignment
 - EBRAINS-ready notebook and Docker container
-- Classical resting-state dataset validation alongside naturalistic viewing
 
 ---
 
@@ -239,11 +235,12 @@ GSOC_27/
 | rsHRF Docker setup | ✅ Done |
 | Data acquisition (ds000228, 155 subjects) | ✅ Done |
 | HRF estimation — sub-pixar001 | ✅ Done |
-| Baseline TVB simulation | ✅ Done |
-| Regional HRF extraction |  ✅ Done |
-| Custom TVB BOLD monitor | ✅ Done |
-| FC comparison | ✅ Done |
+| TR correction and HRF resampling | ✅ Done |
+| TVB local simulation (oscillatory regime) | ✅ Done |
+| Regional HRF extraction | ✅ Done |
+| Empirical HRF convolution pipeline | ✅ Done |
+| FC comparison (canonical vs empirical) | ✅ Done |
 
 ---
 
-*OpenNeuro ds000228 · AAL atlas · rsHRF (Wu et al., Neuroimage 2021) · The Virtual Brain (EBRAINS) · Hagmann 66-region connectome*
+*OpenNeuro ds000228 · rsHRF (Wu et al., Neuroimage 2021) · The Virtual Brain (EBRAINS) · 76-region connectome*
