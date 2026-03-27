@@ -7,3 +7,4 @@ urllib3
 charset_normalizer 
 certifi
 matplotlib
+h5py
