@@ -8,3 +8,4 @@ charset_normalizer
 certifi
 matplotlib
 h5py
+tvb-library
